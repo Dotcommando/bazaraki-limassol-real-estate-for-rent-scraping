@@ -3,9 +3,9 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import time
 from datetime import datetime, timedelta
-import re
 import os
 from dotenv import load_dotenv
+import Levenshtein
 
 load_dotenv()
 
@@ -43,7 +43,7 @@ def parse_announcement(soup):
         return None
 
     id = id_tag["href"].split("/")[-1]
-    url = "https://www.bazaraki.com" + id_tag["href"]
+    url = BASE_URL + id_tag["href"]
     description = description_tag.text.strip()
     date_str, full_address = date_tag.text.strip().rsplit(",", 1)
 
@@ -55,9 +55,11 @@ def parse_announcement(soup):
     city = city.strip()
     district = full_address.strip()
 
-    if city and district.startswith(city):
-        pattern = re.compile(f"^{city}\s*-\s*")
-        district = pattern.sub("", district)
+    if city:
+        parts = [part.strip() for part in district.split('-')]
+
+        if len(parts) == 2 and Levenshtein.distance(parts[0], city) <= 1:
+            district = parts[1]
 
     publish_date = parse_date(date_str)
     price = float(price_tag["content"])
