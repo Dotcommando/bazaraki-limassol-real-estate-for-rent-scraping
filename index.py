@@ -1,51 +1,97 @@
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
 import time
+from datetime import datetime, timedelta
+import re
+import os
 
 def parse_date(date_str):
-    today = datetime.now()
     if "Yesterday" in date_str:
-        date_str = date_str.replace("Yesterday", (today - timedelta(days=1)).strftime("%d.%m.%Y"))
+        date_str = date_str.replace("Yesterday", (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y"))
     elif "Today" in date_str:
-        date_str = date_str.replace("Today", today.strftime("%d.%m.%Y"))
+        date_str = date_str.replace("Today", datetime.now().strftime("%d.%m.%Y"))
     return int(time.mktime(datetime.strptime(date_str.strip(), "%d.%m.%Y %H:%M").timetuple()))
 
-# Запрос к веб-странице с объявлениями
-url = "https://www.bazaraki.com/real-estate-to-rent/apartments-flats/?lat=34.69708393413313&lng=33.01509693679961&radius=15000"
-response = requests.get(url)
-html = response.text
+def get_page_links(soup):
+    max_page_number = 1
+    pagination = soup.find("ul", class_="number-list")
+    if pagination:
+        for li in pagination.find_all("li"):
+            link = li.find("a", class_="page-number")
+            if link:
+                page_number = int(link["data-page"])
+                max_page_number = max(max_page_number, page_number)
+    return [f"/real-estate-to-rent/apartments-flats/?lat=34.69708393413313&lng=33.01509693679961&radius=15000&page={i}" for i in range(1, max_page_number + 1)]
 
-# Парсинг HTML
-soup = BeautifulSoup(html, "html.parser")
-announcement_containers = soup.find_all("li", class_="announcement-container")
+def parse_announcement(soup):
+    id_tag = soup.find("a", class_="announcement-block__title")
+    description_tag = soup.find("div", class_="announcement-block__description")
+    date_tag = soup.find("div", class_="announcement-block__date")
+    price_tag = soup.find("meta", itemprop="price")
+    currency_tag = soup.find("div", class_="announcement-block__price")
 
-# Извлечение данных
-announcements = []
+    if not (id_tag and description_tag and date_tag and price_tag and currency_tag):
+        return None
 
-for container in announcement_containers:
-    title_tag = container.find("a", class_="announcement-block__title")
-    description_tag = container.find("div", class_="announcement-block__description")
-    date_tag = container.find("div", class_="announcement-block__date")
-    price_tag = container.find("meta", itemprop="price")
-    currency_tag = container.find("div", class_="announcement-block__price").find("b")
-
-    title = title_tag.text.strip()
-    url = title_tag["href"]
+    id = id_tag["href"].split("/")[-1]
+    url = "https://www.bazaraki.com" + id_tag["href"]
     description = description_tag.text.strip()
-    date_str, address = date_tag.text.strip().split(",", 1)
+    date_str, full_address = date_tag.text.strip().split(",", 1)
+    city, district = full_address.strip().split(",", 1)
+    city = city.strip()
+    district = district.strip() if district else None
+
+    if district:
+        pattern = re.compile(f"^{city}\s*-\s*")
+        district = pattern.sub("", district)
+
     publish_date = parse_date(date_str)
-    address = address.strip()
     price = float(price_tag["content"])
-    currency = currency_tag.text.strip()
+    currency = currency_tag.find("b")
+    currency = currency.text.strip() if currency else ""
 
-    announcements.append({"title": title, "description": description, "url": url, "price": price, "currency": currency, "publish_date": publish_date, "address": address})
+    return {
+        "id": id,
+        "url": url,
+        "description": description,
+        "publish_date": publish_date,
+        "city": city,
+        "district": district,
+        "price": price,
+        "currency": currency
+    }
 
-# Преобразование данных в формат, удобный для использования с NumPy и Pandas
-announcements_np = np.array(announcements, dtype=object)
-announcements_df = pd.DataFrame(announcements, columns=["title", "description", "url", "price", "currency", "publish_date", "address"])
+def scrape_announcements(url):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, "html.parser")
+    announcements = []
+    for announcement_soup in soup.find_all("li", class_="announcement-container"):
+        announcement = parse_announcement(announcement_soup)
+        if announcement:
+            announcements.append(announcement)
+    return announcements
 
-# Вывод DataFrame в виде таблицы
-print(announcements_df.to_string())
+def main():
+    if not os.path.exists("parsed_data"):
+        os.makedirs("parsed_data")
+
+    base_url = "https://www.bazaraki.com"
+    start_url = "https://www.bazaraki.com/real-estate-to-rent/apartments-flats/?lat=34.69708393413313&lng=33.01509693679961&radius=15000"
+    all_announcements = []
+    response = requests.get(start_url)
+    soup = BeautifulSoup(response.text, "html.parser")
+    page_links = get_page_links(soup)
+    all_announcements += scrape_announcements(start_url)
+
+    for link in page_links:
+        url = base_url + link
+        all_announcements += scrape_announcements(url)
+
+    announcements_df = pd.DataFrame(all_announcements)
+    current_time = time.strftime("%Y-%m-%d_%H:%M:%S")
+    csv_filename = f"parsed_data/limassol_{current_time}.csv"
+    announcements_df.to_csv(csv_filename, index=True)
+
+if __name__ == "__main__":
+    main()
