@@ -5,6 +5,14 @@ import time
 from datetime import datetime, timedelta
 import re
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BASE_URL = os.getenv("BASE_URL")
+LIMASSOL_URL = os.getenv("LIMASSOL")
+PAPHOS_URL = os.getenv("PAPHOS")
+LARNACA_URL = os.getenv("LARNACA")
 
 def parse_date(date_str):
     if "Yesterday" in date_str:
@@ -37,12 +45,17 @@ def parse_announcement(soup):
     id = id_tag["href"].split("/")[-1]
     url = "https://www.bazaraki.com" + id_tag["href"]
     description = description_tag.text.strip()
-    date_str, full_address = date_tag.text.strip().split(",", 1)
-    city, district = full_address.strip().split(",", 1)
-    city = city.strip()
-    district = district.strip() if district else None
+    date_str, full_address = date_tag.text.strip().rsplit(",", 1)
 
-    if district:
+    if "," in date_str:
+        date_str, city = date_str.rsplit(",", 1)
+    else:
+        city = ""
+
+    city = city.strip()
+    district = full_address.strip()
+
+    if city and district.startswith(city):
         pattern = re.compile(f"^{city}\s*-\s*")
         district = pattern.sub("", district)
 
@@ -72,26 +85,26 @@ def scrape_announcements(url):
             announcements.append(announcement)
     return announcements
 
-def main():
-    if not os.path.exists("parsed_data"):
-        os.makedirs("parsed_data")
-
-    base_url = "https://www.bazaraki.com"
-    start_url = "https://www.bazaraki.com/real-estate-to-rent/apartments-flats/?lat=34.69708393413313&lng=33.01509693679961&radius=15000"
+def main(city, city_url):
     all_announcements = []
+
+    start_url = BASE_URL + city_url
+
     response = requests.get(start_url)
     soup = BeautifulSoup(response.text, "html.parser")
+
     page_links = get_page_links(soup)
     all_announcements += scrape_announcements(start_url)
 
     for link in page_links:
-        url = base_url + link
+        url = BASE_URL + link
         all_announcements += scrape_announcements(url)
 
     announcements_df = pd.DataFrame(all_announcements)
-    current_time = time.strftime("%Y-%m-%d_%H:%M:%S")
-    csv_filename = f"parsed_data/limassol_{current_time}.csv"
-    announcements_df.to_csv(csv_filename, index=True)
+    filename = f"parsed_data/{city.lower()}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.csv"
+    announcements_df.to_csv(filename, index=True)
 
 if __name__ == "__main__":
-    main()
+    main("Limassol", LIMASSOL_URL)
+    main("Paphos", PAPHOS_URL)
+    main("Larnaca", LARNACA_URL)
