@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 import Levenshtein
+import re
+import random
 
 load_dotenv()
 
@@ -13,6 +15,21 @@ BASE_URL = os.getenv("BASE_URL")
 LIMASSOL_URL = os.getenv("LIMASSOL")
 PAPHOS_URL = os.getenv("PAPHOS")
 LARNACA_URL = os.getenv("LARNACA")
+MIN_DELAY = float(os.getenv("MIN_DELAY", 100)) / 1000
+MAX_DELAY = float(os.getenv("MAX_DELAY", 5000)) / 1000
+
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36"
+}
+
+def random_delay(min_delay, max_delay):
+    time.sleep(random.uniform(min_delay, max_delay))
+
+def get_response(url):
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        print(f"Error: HTTP status code {response.status_code} for URL {url}")
+    return response
 
 def parse_date(date_str):
     if "Yesterday" in date_str:
@@ -78,7 +95,7 @@ def parse_announcement(soup):
     }
 
 def scrape_announcements(url):
-    response = requests.get(url)
+    response = get_response(url)
     soup = BeautifulSoup(response.text, "html.parser")
     announcements = []
     for announcement_soup in soup.find_all("li", class_="announcement-container"):
@@ -87,12 +104,30 @@ def scrape_announcements(url):
             announcements.append(announcement)
     return announcements
 
+def extract_additional_data(url):
+    response = get_response(url)
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    data = {}
+    ul = soup.find("ul", class_="chars-column")
+
+    if ul:
+        for li in ul.find_all("li"):
+            key = li.find("span", class_="key-chars")
+            value = li.find("a", class_="value-chars") or li.find("span", class_="value-chars")
+            if key and value:
+                column_name = re.sub(r'\s+', ' ', key.text.strip()).lower().replace(" ", "-").strip(":")
+                data[column_name] = value.text.strip()
+
+    random_delay(MIN_DELAY, MAX_DELAY)
+    return data
+
 def main(city, city_url):
     all_announcements = []
 
     start_url = BASE_URL + city_url
 
-    response = requests.get(start_url)
+    response = get_response(start_url)
     soup = BeautifulSoup(response.text, "html.parser")
 
     page_links = get_page_links(soup)
@@ -104,7 +139,19 @@ def main(city, city_url):
 
     announcements_df = pd.DataFrame(all_announcements)
     filename = f"parsed_data/{city.lower()}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.csv"
-    announcements_df.to_csv(filename, index=True)
+    announcements_df.to_csv(filename, index=False)
+
+    for index, row in announcements_df.iterrows():
+        additional_data = extract_additional_data(row['url'])
+        for column_name, value in additional_data.items():
+            if column_name not in announcements_df.columns:
+                announcements_df[column_name] = None
+            announcements_df.at[index, column_name] = value
+
+        if (index + 1) % 5 == 0:
+            announcements_df.to_csv(filename, index=False)
+
+    announcements_df.to_csv(filename, index=False)
 
 if __name__ == "__main__":
     main("Limassol", LIMASSOL_URL)
