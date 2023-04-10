@@ -12,9 +12,6 @@ import random
 load_dotenv()
 
 BASE_URL = os.getenv("BASE_URL")
-LIMASSOL_URL = os.getenv("LIMASSOL")
-PAPHOS_URL = os.getenv("PAPHOS")
-LARNACA_URL = os.getenv("LARNACA")
 MIN_DELAY = float(os.getenv("MIN_DELAY", 100)) / 1000
 MAX_DELAY = float(os.getenv("MAX_DELAY", 5000)) / 1000
 
@@ -55,14 +52,16 @@ def parse_announcement(soup):
     date_tag = soup.find("div", class_="announcement-block__date")
     price_tag = soup.find("meta", itemprop="price")
     currency_tag = soup.find("div", class_="announcement-block__price")
+    ad_id_tag = soup.find("div", class_="announcement-block__favorites")
 
-    if not (id_tag and description_tag and date_tag and price_tag and currency_tag):
+    if not (id_tag and description_tag and date_tag and price_tag and currency_tag and ad_id_tag):
         return None
 
     id = id_tag["href"].split("/")[-1]
     url = BASE_URL + id_tag["href"]
     description = description_tag.text.strip()
     date_str, full_address = date_tag.text.strip().rsplit(",", 1)
+    ad_id = ad_id_tag["data-id"]
 
     if "," in date_str:
         date_str, city = date_str.rsplit(",", 1)
@@ -91,7 +90,8 @@ def parse_announcement(soup):
         "city": city,
         "district": district,
         "price": price,
-        "currency": currency
+        "currency": currency,
+        "ad_id": ad_id
     }
 
 def scrape_announcements(url):
@@ -103,6 +103,26 @@ def scrape_announcements(url):
         if announcement:
             announcements.append(announcement)
     return announcements
+
+def get_city_regions():
+    city_regions = {}
+    for key, value in os.environ.items():
+        if key.endswith("_URL") and key != "BASE_URL":
+            city = key[:-4]
+            if "_" in city:
+                city, region = city.rsplit("_", 1)
+            else:
+                region = None
+
+            if city not in city_regions:
+                city_regions[city] = {}
+
+            if region:
+                city_regions[city][region] = value
+            else:
+                city_regions[city]["main"] = value
+
+    return city_regions
 
 def extract_additional_data(url):
     response = get_response(url)
@@ -119,10 +139,19 @@ def extract_additional_data(url):
                 column_name = re.sub(r'\s+', ' ', key.text.strip()).lower().replace(" ", "-").strip(":")
                 data[column_name] = value.text.strip()
 
+    details_div = soup.find("div", class_="announcement__details")
+
+    if details_div:
+        date_meta = details_div.find("span", class_="date-meta")
+
+        if date_meta:
+            date_str = date_meta.text.strip().replace("Posted: ", "")
+            data["publish_date"] = parse_date(date_str)
+
     random_delay(MIN_DELAY, MAX_DELAY)
     return data
 
-def main(city, city_url):
+def main(city, city_url, filename):
     all_announcements = []
 
     start_url = BASE_URL + city_url
@@ -138,22 +167,31 @@ def main(city, city_url):
         all_announcements += scrape_announcements(url)
 
     announcements_df = pd.DataFrame(all_announcements)
-    filename = f"parsed_data/{city.lower()}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.csv"
-    announcements_df.to_csv(filename, index=False)
+
+    if os.path.exists(filename):
+        existing_df = pd.read_csv(filename)
+        combined_df = pd.concat([existing_df, announcements_df], ignore_index=True)
+    else:
+        combined_df = announcements_df
+
+    combined_df.to_csv(filename, index=False)
 
     for index, row in announcements_df.iterrows():
         additional_data = extract_additional_data(row['url'])
+
         for column_name, value in additional_data.items():
-            if column_name not in announcements_df.columns:
-                announcements_df[column_name] = None
-            announcements_df.at[index, column_name] = value
+            if column_name not in combined_df.columns:
+                combined_df[column_name] = None
+            combined_df.at[index, column_name] = value
 
         if (index + 1) % 5 == 0:
-            announcements_df.to_csv(filename, index=False)
+            combined_df.to_csv(filename, index=False)
 
-    announcements_df.to_csv(filename, index=False)
+    combined_df.to_csv(filename, index=False)
 
 if __name__ == "__main__":
-    main("Limassol", LIMASSOL_URL)
-    main("Paphos", PAPHOS_URL)
-    main("Larnaca", LARNACA_URL)
+    city_regions = get_city_regions()
+    for city, regions in city_regions.items():
+        filename = f"parsed_data/{city.lower()}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.csv"
+        for region, region_url in regions.items():
+            main(city, region_url, filename)
